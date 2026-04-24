@@ -5,14 +5,17 @@ import { PIECE_VALUES } from "../constants/pieceValues";
 import type { Board, Move, Piece, PieceType, Side } from "../types/chess";
 
 export const AI_SEARCH_DEPTH = 8;
-export const AI_THINK_TIME_MS = 8000;
-export const AI_MAX_TIME_MS = 55000;
+export const AI_THINK_TIME_MS = 12000;
+export const AI_MAX_TIME_MS = 58000;
 
 const MATE_SCORE = 10_000_000;
 const INF_SCORE = 100_000_000;
 const QUIESCENCE_LIMIT = 6;
 const KILLER_SLOTS = 2;
 const TT_MAX_SIZE = 120_000;
+const TIME_CHECK_INTERVAL = 1024;
+const QUIESCENCE_NODE_LIMIT = 25_000;
+const ROOT_MOVE_CAP_LATE = 18;
 
 type BoundFlag = "exact" | "lower" | "upper";
 
@@ -246,8 +249,11 @@ function quiescence(
   ply: number,
   state: SearchState,
 ): number {
-  state.throwIfTimedOut();
+  if ((state.nodes & (TIME_CHECK_INTERVAL - 1)) === 0) {
+    state.throwIfTimedOut();
+  }
   state.nodes += 1;
+  state.quiescenceNodes += 1;
 
   const standPat = evaluateBoard(board, side);
   if (standPat >= beta) {
@@ -258,6 +264,10 @@ function quiescence(
   }
 
   if (ply >= QUIESCENCE_LIMIT) {
+    return alpha;
+  }
+
+  if (state.quiescenceNodes >= QUIESCENCE_NODE_LIMIT) {
     return alpha;
   }
 
@@ -304,12 +314,15 @@ function quiescence(
 
 interface SearchState {
   startTime: number;
-  deadline: number;
+  softDeadline: number;
+  hardDeadline: number;
   nodes: number;
+  quiescenceNodes: number;
   historyTable: number[][];
   killerMoves: Array<Array<Move | undefined>>;
   transpositionTable: Map<bigint, TranspositionEntry>;
   throwIfTimedOut: () => void;
+  reachedSoftDeadline: () => boolean;
 }
 
 function negamax(
@@ -419,20 +432,29 @@ function negamax(
 
 function createSearchState(timeLimitMs: number): SearchState {
   const startTime = performance.now();
-  const deadline = startTime + Math.min(timeLimitMs, AI_MAX_TIME_MS);
+  const boundedTimeLimit = Math.min(timeLimitMs, AI_MAX_TIME_MS);
+  const softBudget = Math.min(
+    Math.max(2500, boundedTimeLimit * 0.78),
+    Math.max(2500, boundedTimeLimit - 1500),
+  );
+  const softDeadline = startTime + softBudget;
+  const hardDeadline = startTime + boundedTimeLimit;
 
   return {
     startTime,
-    deadline,
+    softDeadline,
+    hardDeadline,
     nodes: 0,
+    quiescenceNodes: 0,
     historyTable: Array.from({ length: 90 }, () => Array.from({ length: 90 }, () => 0)),
     killerMoves: [],
     transpositionTable: new Map<bigint, TranspositionEntry>(),
     throwIfTimedOut: () => {
-      if (performance.now() >= deadline) {
+      if (performance.now() >= hardDeadline) {
         throw new SearchTimeoutError("Search timed out");
       }
     },
+    reachedSoftDeadline: () => performance.now() >= softDeadline,
   };
 }
 
@@ -473,7 +495,7 @@ export function findBestMove(
 
   try {
     for (let depth = 1; depth <= maxDepth; depth += 1) {
-      const orderedRootMoves = orderMoves(
+      let orderedRootMoves = orderMoves(
         board,
         rootMoves,
         side,
@@ -482,6 +504,10 @@ export function findBestMove(
         0,
         bestMove,
       );
+
+      if (depth >= 5 && state.reachedSoftDeadline() && orderedRootMoves.length > ROOT_MOVE_CAP_LATE) {
+        orderedRootMoves = orderedRootMoves.slice(0, ROOT_MOVE_CAP_LATE);
+      }
 
       let currentBestMove = orderedRootMoves[0];
       let currentBestScore = -INF_SCORE;
@@ -511,11 +537,19 @@ export function findBestMove(
         if (score > alpha) {
           alpha = score;
         }
+
+        if (depth >= 4 && state.reachedSoftDeadline()) {
+          break;
+        }
       }
 
       bestMove = currentBestMove;
       bestScore = currentBestScore;
       depthReached = depth;
+
+      if (state.reachedSoftDeadline()) {
+        break;
+      }
     }
   } catch (error) {
     if (!(error instanceof SearchTimeoutError)) {
