@@ -4,18 +4,19 @@ import { applyMove, generateAllLegalMoves } from "./moveGenerator";
 import { PIECE_VALUES } from "../constants/pieceValues";
 import type { Board, Move, Piece, PieceType, Side } from "../types/chess";
 
-export const AI_SEARCH_DEPTH = 10;
-export const AI_THINK_TIME_MS = 12000;
-export const AI_MAX_TIME_MS = 58000;
+export const AI_SEARCH_DEPTH = 11;
+export const AI_THINK_TIME_MS = 20000;
+export const AI_MAX_TIME_MS = 80000;
 
 const MATE_SCORE = 10_000_000;
 const INF_SCORE = 100_000_000;
-const QUIESCENCE_LIMIT = 6;
+const QUIESCENCE_LIMIT = 8;
 const KILLER_SLOTS = 2;
-const TT_MAX_SIZE = 120_000;
+const TT_MAX_SIZE = 220_000;
 const TIME_CHECK_INTERVAL = 1024;
-const QUIESCENCE_NODE_LIMIT = 25_000;
-const ROOT_MOVE_CAP_LATE = 18;
+const QUIESCENCE_NODE_LIMIT = 50_000;
+const ROOT_MOVE_CAP_LATE = 16;
+const MATE_BREAK_WINDOW = 2_000;
 
 type BoundFlag = "exact" | "lower" | "upper";
 
@@ -80,6 +81,11 @@ const RED_BOOK: BookMovePattern[] = [
   { from: { row: 9, col: 1 }, to: { row: 7, col: 2 } },
   { from: { row: 9, col: 7 }, to: { row: 7, col: 6 } },
   { from: { row: 6, col: 4 }, to: { row: 5, col: 4 } },
+  { from: { row: 7, col: 7 }, to: { row: 7, col: 4 } },
+  { from: { row: 9, col: 0 }, to: { row: 8, col: 0 } },
+  { from: { row: 9, col: 8 }, to: { row: 8, col: 8 } },
+  { from: { row: 6, col: 2 }, to: { row: 5, col: 2 } },
+  { from: { row: 6, col: 6 }, to: { row: 5, col: 6 } },
 ];
 
 const BLACK_BOOK: BookMovePattern[] = [
@@ -87,6 +93,11 @@ const BLACK_BOOK: BookMovePattern[] = [
   { from: { row: 0, col: 1 }, to: { row: 2, col: 2 } },
   { from: { row: 0, col: 7 }, to: { row: 2, col: 6 } },
   { from: { row: 3, col: 4 }, to: { row: 4, col: 4 } },
+  { from: { row: 2, col: 7 }, to: { row: 2, col: 4 } },
+  { from: { row: 0, col: 0 }, to: { row: 1, col: 0 } },
+  { from: { row: 0, col: 8 }, to: { row: 1, col: 8 } },
+  { from: { row: 3, col: 2 }, to: { row: 4, col: 2 } },
+  { from: { row: 3, col: 6 }, to: { row: 4, col: 6 } },
 ];
 
 function pieceIndex(piece: Piece): number {
@@ -132,6 +143,36 @@ function countOccupied(board: Board): number {
   return count;
 }
 
+function computeDynamicTimeLimit(
+  board: Board,
+  side: Side,
+  requestedTimeLimitMs: number,
+  rootMovesCount: number,
+): number {
+  const occupied = countOccupied(board);
+  let budget = requestedTimeLimitMs;
+
+  if (rootMovesCount >= 40) {
+    budget *= 1.35;
+  } else if (rootMovesCount >= 30) {
+    budget *= 1.18;
+  } else if (rootMovesCount <= 10) {
+    budget *= 0.9;
+  }
+
+  if (occupied <= 20) {
+    budget *= 1.18;
+  }
+  if (occupied <= 14) {
+    budget *= 1.12;
+  }
+  if (isInCheck(board, side)) {
+    budget *= 1.2;
+  }
+
+  return Math.min(AI_MAX_TIME_MS, Math.round(budget));
+}
+
 function findBookMove(board: Board, side: Side, legalMoves: Move[]): Move | null {
   if (countOccupied(board) < 28) {
     return null;
@@ -168,7 +209,10 @@ function tacticalScore(board: Board, move: Move, side: Side): number {
   let score = 0;
 
   if (move.captured) {
-    score += PIECE_VALUES[move.captured.type] * 16 - PIECE_VALUES[move.piece.type];
+    score += PIECE_VALUES[move.captured.type] * 18 - PIECE_VALUES[move.piece.type];
+    if (PIECE_VALUES[move.captured.type] >= PIECE_VALUES.horse) {
+      score += 240;
+    }
   }
 
   if (isCheckingMove(board, move, side)) {
@@ -180,9 +224,9 @@ function tacticalScore(board: Board, move: Move, side: Side): number {
   } else if (move.piece.type === "cannon") {
     score += 90;
   } else if (move.piece.type === "horse") {
-    score += 80;
+    score += 110;
   } else if (move.piece.type === "soldier") {
-    score += side === "red" ? 9 - move.to.row : move.to.row;
+    score += (side === "red" ? 9 - move.to.row : move.to.row) * 8;
   }
 
   return score;
@@ -393,15 +437,23 @@ function negamax(
   for (let moveOrder = 0; moveOrder < orderedMoves.length; moveOrder += 1) {
     const move = orderedMoves[moveOrder];
     const nextBoard = applyMove(board, move);
-    const extension = isInCheck(nextBoard, opponent) ? 1 : 0;
+    const highValueCapture =
+      Boolean(move.captured) && PIECE_VALUES[move.captured!.type] >= PIECE_VALUES.horse;
+    const extension = isInCheck(nextBoard, opponent) || highValueCapture ? 1 : 0;
     const isQuiet = !move.captured && extension === 0;
     const reduction =
-      depth >= 4 && isQuiet && !sideInCheck && moveOrder >= 4 ? 1 : 0;
+      depth >= 4 && isQuiet && !sideInCheck
+        ? moveOrder >= 8
+          ? 2
+          : moveOrder >= 4
+            ? 1
+            : 0
+        : 0;
 
     let score = -negamax(
       nextBoard,
       opponent,
-      depth - 1 - reduction + extension,
+      Math.max(0, depth - 1 - reduction + extension),
       -alpha - 1,
       -alpha,
       ply + 1,
@@ -461,8 +513,8 @@ function createSearchState(timeLimitMs: number): SearchState {
   const startTime = performance.now();
   const boundedTimeLimit = Math.min(timeLimitMs, AI_MAX_TIME_MS);
   const softBudget = Math.min(
-    Math.max(2500, boundedTimeLimit * 0.78),
-    Math.max(2500, boundedTimeLimit - 1500),
+    Math.max(4000, boundedTimeLimit * 0.84),
+    Math.max(4000, boundedTimeLimit - 2200),
   );
   const softDeadline = startTime + softBudget;
   const hardDeadline = startTime + boundedTimeLimit;
@@ -491,11 +543,11 @@ export function findBestMove(
   options: SearchOptions = {},
 ): SearchStats {
   const maxDepth = options.maxDepth ?? AI_SEARCH_DEPTH;
-  const timeLimitMs = options.timeLimitMs ?? AI_THINK_TIME_MS;
-  const state = createSearchState(timeLimitMs);
+  const requestedTimeLimitMs = options.timeLimitMs ?? AI_THINK_TIME_MS;
   const rootMoves = generateAllLegalMoves(board, side);
 
   if (rootMoves.length === 0) {
+    const state = createSearchState(requestedTimeLimitMs);
     return {
       bestMove: null,
       depthReached: 0,
@@ -504,6 +556,10 @@ export function findBestMove(
       score: -MATE_SCORE,
     };
   }
+
+  const state = createSearchState(
+    computeDynamicTimeLimit(board, side, requestedTimeLimitMs, rootMoves.length),
+  );
 
   const bookMove = findBookMove(board, side, rootMoves);
   if (bookMove) {
@@ -579,32 +635,30 @@ export function findBestMove(
           beta = Math.min(INF_SCORE, betaStart + 120);
           continue;
         }
-<<<<<<< HEAD
         if (currentBestScore >= betaStart && betaStart !== INF_SCORE) {
           alpha = Math.max(-INF_SCORE, alphaStart - 120);
           beta = Math.min(INF_SCORE, betaStart + 260);
           continue;
         }
-        break;
-=======
 
         if (depth >= 4 && state.reachedSoftDeadline()) {
           break;
         }
->>>>>>> c97ffa3 (fix: enforce bounded ai search time in complex positions)
+        break;
       }
 
       bestMove = currentBestMove;
       bestScore = currentBestScore;
       depthReached = depth;
-<<<<<<< HEAD
       aspirationCenter = bestScore;
-=======
 
       if (state.reachedSoftDeadline()) {
         break;
       }
->>>>>>> c97ffa3 (fix: enforce bounded ai search time in complex positions)
+
+      if (Math.abs(bestScore) >= MATE_SCORE - MATE_BREAK_WINDOW) {
+        break;
+      }
     }
   } catch (error) {
     if (!(error instanceof SearchTimeoutError)) {
