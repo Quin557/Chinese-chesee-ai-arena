@@ -29,6 +29,11 @@ export interface SearchStats {
   score: number;
 }
 
+interface BookMovePattern {
+  from: { row: number; col: number };
+  to: { row: number; col: number };
+}
+
 interface TranspositionEntry {
   depth: number;
   score: number;
@@ -67,6 +72,20 @@ function createZobristTable(): bigint[][][] {
 
 const ZOBRIST = createZobristTable();
 
+const RED_BOOK: BookMovePattern[] = [
+  { from: { row: 7, col: 1 }, to: { row: 7, col: 4 } },
+  { from: { row: 9, col: 1 }, to: { row: 7, col: 2 } },
+  { from: { row: 9, col: 7 }, to: { row: 7, col: 6 } },
+  { from: { row: 6, col: 4 }, to: { row: 5, col: 4 } },
+];
+
+const BLACK_BOOK: BookMovePattern[] = [
+  { from: { row: 2, col: 1 }, to: { row: 2, col: 4 } },
+  { from: { row: 0, col: 1 }, to: { row: 2, col: 2 } },
+  { from: { row: 0, col: 7 }, to: { row: 2, col: 6 } },
+  { from: { row: 3, col: 4 }, to: { row: 4, col: 4 } },
+];
+
 function pieceIndex(piece: Piece): number {
   return PIECE_TYPE_INDEX[piece.type] + (piece.side === "red" ? 7 : 0);
 }
@@ -96,6 +115,40 @@ function sameMove(a?: Move, b?: Move): boolean {
       a.to.row === b.to.row &&
       a.to.col === b.to.col,
   );
+}
+
+function countOccupied(board: Board): number {
+  let count = 0;
+  for (let row = 0; row < board.length; row += 1) {
+    for (let col = 0; col < board[row].length; col += 1) {
+      if (board[row][col]) {
+        count += 1;
+      }
+    }
+  }
+  return count;
+}
+
+function findBookMove(board: Board, side: Side, legalMoves: Move[]): Move | null {
+  if (countOccupied(board) < 28) {
+    return null;
+  }
+
+  const patterns = side === "red" ? RED_BOOK : BLACK_BOOK;
+  for (const pattern of patterns) {
+    const match = legalMoves.find(
+      (move) =>
+        move.from.row === pattern.from.row &&
+        move.from.col === pattern.from.col &&
+        move.to.row === pattern.to.row &&
+        move.to.col === pattern.to.col,
+    );
+    if (match) {
+      return match;
+    }
+  }
+
+  return null;
 }
 
 function moveIndex(position: { row: number; col: number }): number {
@@ -400,6 +453,17 @@ export function findBestMove(
       nodes: state.nodes,
       elapsedMs: performance.now() - state.startTime,
       score: -MATE_SCORE,
+    };
+  }
+
+  const bookMove = findBookMove(board, side, rootMoves);
+  if (bookMove) {
+    return {
+      bestMove: bookMove,
+      depthReached: 0,
+      nodes: 0,
+      elapsedMs: 0,
+      score: tacticalScore(board, bookMove, side),
     };
   }
 

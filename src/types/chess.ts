@@ -29,6 +29,24 @@ export interface Move {
   notation: string;
 }
 
+export interface EvalBreakdown {
+  material: number;
+  kingSafety: number;
+  centerControl: number;
+  openLinePressure: number;
+  development: number;
+  total: number;
+}
+
+export interface WinProbabilityPoint {
+  ply: number;
+  redWinRate: number;
+  blackWinRate: number;
+  scoreFromRed: number;
+  explanation: string;
+  breakdown: EvalBreakdown;
+}
+
 export type BoardCell = Piece | null;
 export type Board = BoardCell[][];
 
@@ -44,4 +62,6 @@ export interface GameSnapshot {
   winner?: Side;
   hasStarted: boolean;
   statusMessage: string;
+  winRateHistory: WinProbabilityPoint[];
+  lastEvaluation?: WinProbabilityPoint;
 }
