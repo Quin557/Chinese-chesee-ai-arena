@@ -1,12 +1,16 @@
 import { evaluateDetailedBoard } from "./evaluation";
 import type { Board, EvalBreakdown, Side, WinProbabilityPoint } from "../types/chess";
 
+interface ProbabilityOptions {
+  winner?: Side;
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
 function scoreToWinRate(score: number): number {
-  const normalized = clamp(score / 900, -8, 8);
+  const normalized = clamp(score / 260, -10, 10);
   return 1 / (1 + Math.exp(-normalized));
 }
 
@@ -55,10 +59,12 @@ export function buildWinProbabilityPoint(
   board: Board,
   ply: number,
   perspective: Side = "red",
+  options: ProbabilityOptions = {},
 ): WinProbabilityPoint {
   const breakdown = evaluateDetailedBoard(board, perspective);
   const redScore = perspective === "red" ? breakdown.total : -breakdown.total;
-  const redWinRate = scoreToWinRate(redScore);
+  const redWinRate =
+    options.winner === "red" ? 1 : options.winner === "black" ? 0 : scoreToWinRate(redScore);
   const reasons = majorReasons(breakdown);
 
   return {
@@ -67,9 +73,12 @@ export function buildWinProbabilityPoint(
     blackWinRate: 1 - redWinRate,
     scoreFromRed: redScore,
     explanation:
-      reasons.length > 0
+      options.winner
+        ? `依据：形成绝杀，${options.winner === "red" ? "红方" : "黑方"}胜率直接锁定。`
+        : reasons.length > 0
         ? `依据：${reasons.join("、")}。`
         : "依据：当前局面大体均衡，暂未形成明显优势。",
     breakdown,
+    decisive: options.winner,
   };
 }

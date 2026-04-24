@@ -45,6 +45,7 @@ export interface WinProbabilityPoint {
   scoreFromRed: number;
   explanation: string;
   breakdown: EvalBreakdown;
+  decisive?: Side;
 }
 
 export type BoardCell = Piece | null;
