@@ -1,6 +1,5 @@
-import type { DisplayMode } from "../utils/presentation";
+import type { StarterChoice, DisplayMode } from "../utils/presentation";
 import { getDisplayMode, getDisplaySide, sideText } from "../utils/presentation";
-import type { StarterChoice } from "../utils/presentation";
 import type { WinProbabilityPoint } from "../types/chess";
 
 interface WinProbabilityChartProps {
@@ -9,31 +8,47 @@ interface WinProbabilityChartProps {
   aiThinking: boolean;
 }
 
+interface ChartPoint {
+  x: number;
+  y: number;
+  value: number;
+}
+
+function buildSegments(points: ChartPoint[]) {
+  return points.slice(1).map((point, index) => {
+    const prev = points[index];
+    const avgValue = (prev.value + point.value) / 2;
+    return {
+      key: `${index}-${point.x}`,
+      path: `M ${prev.x} ${prev.y} L ${point.x} ${point.y}`,
+      dominant: avgValue >= 50 ? "red" : "black",
+    };
+  });
+}
+
 function WinProbabilityChart({
   history,
   selectedStarter,
   aiThinking,
 }: WinProbabilityChartProps) {
   const displayMode: DisplayMode = getDisplayMode(selectedStarter);
-  const displayRedInternal = getDisplaySide("red", displayMode) === "red" ? "red" : "black";
-
-  const points = history.map((point, index) => {
-    const displayedRedRate =
-      displayRedInternal === "red" ? point.redWinRate : point.blackWinRate;
-    const displayedBlackRate = 1 - displayedRedRate;
+  const displayedRedIsInternalRed = getDisplaySide("red", displayMode) === "red";
+  const points: ChartPoint[] = history.map((point, index) => {
+    const displayedRedRate = displayedRedIsInternalRed ? point.redWinRate : point.blackWinRate;
+    const value = Math.round(displayedRedRate * 1000) / 10;
     return {
       x: history.length === 1 ? 0 : (index / (history.length - 1)) * 100,
-      redY: (1 - displayedRedRate) * 100,
-      blackY: (1 - displayedBlackRate) * 100,
+      y: 100 - value,
+      value,
     };
   });
 
-  const redPolyline = points.map((point) => `${point.x},${point.redY}`).join(" ");
-  const blackPolyline = points.map((point) => `${point.x},${point.blackY}`).join(" ");
+  const segments = buildSegments(points);
   const latest = history[history.length - 1];
-  const latestRedRate =
-    displayRedInternal === "red" ? latest.redWinRate : latest.blackWinRate;
+  const latestRedRate = displayedRedIsInternalRed ? latest.redWinRate : latest.blackWinRate;
   const latestBlackRate = 1 - latestRedRate;
+  const displayRedSide = getDisplaySide("red", displayMode);
+  const displayBlackSide = getDisplaySide("black", displayMode);
 
   return (
     <section className="panel">
@@ -44,34 +59,57 @@ function WinProbabilityChart({
         </div>
         <div className="chart-badges">
           <span className="chart-badge chart-badge-red">
-            红方 {Math.round(latestRedRate * 100)}%
+            {sideText(displayRedSide)} {Math.round(latestRedRate * 100)}%
           </span>
           <span className="chart-badge chart-badge-black">
-            黑方 {Math.round(latestBlackRate * 100)}%
+            {sideText(displayBlackSide)} {Math.round(latestBlackRate * 100)}%
           </span>
         </div>
       </div>
 
       <div className="chart-shell">
         <svg viewBox="0 0 100 100" className="probability-chart" preserveAspectRatio="none">
-          {[20, 40, 60, 80].map((line) => (
+          {[10, 30, 50, 70, 90].map((line) => (
             <line
               key={line}
               x1="0"
-              y1={line}
+              y1={100 - line}
               x2="100"
-              y2={line}
-              className="chart-grid-line"
+              y2={100 - line}
+              className={line === 50 ? "chart-mid-line" : "chart-grid-line"}
             />
           ))}
-          <polyline points={blackPolyline} className="chart-line chart-line-black" />
-          <polyline points={redPolyline} className="chart-line chart-line-red" />
+
+          {segments.map((segment) => (
+            <path
+              key={segment.key}
+              d={segment.path}
+              className={
+                segment.dominant === "red"
+                  ? "chart-line-segment chart-line-segment-red"
+                  : "chart-line-segment chart-line-segment-black"
+              }
+            />
+          ))}
+
+          {points.length > 0 ? (
+            <circle
+              cx={points[points.length - 1].x}
+              cy={points[points.length - 1].y}
+              r="2.4"
+              className={
+                points[points.length - 1].value >= 50
+                  ? "chart-point chart-point-red"
+                  : "chart-point chart-point-black"
+              }
+            />
+          ) : null}
         </svg>
       </div>
 
       <div className="chart-axis">
         <span>开局</span>
-        <span>{sideText(getDisplaySide("red", displayMode))}更优</span>
+        <span>50% 均势线</span>
         <span>当前</span>
       </div>
     </section>

@@ -87,9 +87,10 @@ function createSnapshot(snapshot: GameSnapshot): GameSnapshot {
 }
 
 function createPreGameSnapshot(starterChoice: StarterChoice): GameSnapshot {
-  const initialEval = buildWinProbabilityPoint(createInitialBoard(), 0, "red");
+  const initialBoard = createInitialBoard();
+  const initialEval = buildWinProbabilityPoint(initialBoard, 0, "red");
   return {
-    board: createInitialBoard(),
+    board: initialBoard,
     currentTurn: starterChoice === "player" ? PLAYER_SIDE : AI_SIDE,
     playerSide: PLAYER_SIDE,
     aiSide: AI_SIDE,
@@ -106,9 +107,10 @@ function createPreGameSnapshot(starterChoice: StarterChoice): GameSnapshot {
 }
 
 function createStartedSnapshot(starterChoice: StarterChoice): GameSnapshot {
-  const initialEval = buildWinProbabilityPoint(createInitialBoard(), 0, "red");
+  const initialBoard = createInitialBoard();
+  const initialEval = buildWinProbabilityPoint(initialBoard, 0, "red");
   return {
-    board: createInitialBoard(),
+    board: initialBoard,
     currentTurn: starterChoice === "player" ? PLAYER_SIDE : AI_SIDE,
     playerSide: PLAYER_SIDE,
     aiSide: AI_SIDE,
@@ -237,6 +239,12 @@ function App() {
       }
 
       if (!move) {
+        const finalEval = buildWinProbabilityPoint(
+          latest.board,
+          latest.moveHistory.length,
+          "red",
+          { winner: latest.playerSide },
+        );
         const snapshot: GameSnapshot = {
           board: latest.board,
           currentTurn: latest.aiSide,
@@ -252,8 +260,8 @@ function App() {
           winner: latest.playerSide,
           hasStarted: true,
           statusMessage: "AI 已无合法走法，你获胜了。",
-          winRateHistory: latest.winRateHistory,
-          lastEvaluation: latest.lastEvaluation,
+          winRateHistory: [...latest.winRateHistory, finalEval],
+          lastEvaluation: finalEval,
         };
 
         applySnapshotState(snapshot);
@@ -262,9 +270,11 @@ function App() {
 
       const nextBoard = applyMove(latest.board, move);
       const nextMoves = [...latest.moveHistory, move];
-      const nextEval = buildWinProbabilityPoint(nextBoard, nextMoves.length, "red");
       const playerReplies = generateAllLegalMoves(nextBoard, latest.playerSide);
       const aiWon = playerReplies.length === 0;
+      const nextEval = buildWinProbabilityPoint(nextBoard, nextMoves.length, "red", {
+        winner: aiWon ? latest.aiSide : undefined,
+      });
       const snapshot: GameSnapshot = {
         board: nextBoard,
         currentTurn: latest.playerSide,
@@ -424,9 +434,11 @@ function App() {
 
     const nextBoard = applyMove(board, legalMove);
     const nextMoves = [...moveHistory, legalMove];
-    const nextEval = buildWinProbabilityPoint(nextBoard, nextMoves.length, "red");
     const aiReplies = generateAllLegalMoves(nextBoard, aiSideState);
     const playerWon = aiReplies.length === 0;
+    const nextEval = buildWinProbabilityPoint(nextBoard, nextMoves.length, "red", {
+      winner: playerWon ? playerSideState : undefined,
+    });
     const snapshot: GameSnapshot = {
       board: nextBoard,
       currentTurn: aiSideState,

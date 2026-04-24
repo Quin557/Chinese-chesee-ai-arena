@@ -402,19 +402,38 @@ button {
   stroke-dasharray: 2.5 3;
 }
 
-.chart-line {
+.chart-mid-line {
+  stroke: rgba(166, 108, 53, 0.45);
+  stroke-width: 1.2;
+  stroke-dasharray: 3 2.5;
+}
+
+.chart-line-segment {
   fill: none;
-  stroke-width: 2.8;
+  stroke-width: 3;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
-.chart-line-red {
+.chart-line-segment-red {
   stroke: #b71f19;
 }
 
-.chart-line-black {
+.chart-line-segment-black {
   stroke: #2e2722;
+}
+
+.chart-point {
+  stroke: #fff8ef;
+  stroke-width: 1.2;
+}
+
+.chart-point-red {
+  fill: #c12019;
+}
+
+.chart-point-black {
+  fill: #2e2722;
 }
 
 .chart-axis {

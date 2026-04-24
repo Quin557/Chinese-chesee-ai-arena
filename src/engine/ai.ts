@@ -4,8 +4,8 @@ import { applyMove, generateAllLegalMoves } from "./moveGenerator";
 import { PIECE_VALUES } from "../constants/pieceValues";
 import type { Board, Move, Piece, PieceType, Side } from "../types/chess";
 
-export const AI_SEARCH_DEPTH = 8;
-export const AI_THINK_TIME_MS = 8000;
+export const AI_SEARCH_DEPTH = 10;
+export const AI_THINK_TIME_MS = 12000;
 export const AI_MAX_TIME_MS = 55000;
 
 const MATE_SCORE = 10_000_000;
@@ -348,6 +348,16 @@ function negamax(
 
   state.nodes += 1;
 
+  const sideInCheck = isInCheck(board, side);
+  if (!sideInCheck && depth >= 3) {
+    const opponent: Side = side === "red" ? "black" : "red";
+    const reduction = depth >= 6 ? 3 : 2;
+    const nullScore = -negamax(board, opponent, depth - 1 - reduction, -beta, -beta + 1, ply + 1, state);
+    if (nullScore >= beta) {
+      return beta;
+    }
+  }
+
   const legalMoves = generateAllLegalMoves(board, side);
   if (legalMoves.length === 0) {
     return -MATE_SCORE + ply;
@@ -367,18 +377,35 @@ function negamax(
   let bestScore = -INF_SCORE;
   let bestMove = orderedMoves[0];
 
-  for (const move of orderedMoves) {
+  for (let moveOrder = 0; moveOrder < orderedMoves.length; moveOrder += 1) {
+    const move = orderedMoves[moveOrder];
     const nextBoard = applyMove(board, move);
     const extension = isInCheck(nextBoard, opponent) ? 1 : 0;
-    const score = -negamax(
+    const isQuiet = !move.captured && extension === 0;
+    const reduction =
+      depth >= 4 && isQuiet && !sideInCheck && moveOrder >= 4 ? 1 : 0;
+
+    let score = -negamax(
       nextBoard,
       opponent,
-      depth - 1 + extension,
-      -beta,
+      depth - 1 - reduction + extension,
+      -alpha - 1,
       -alpha,
       ply + 1,
       state,
     );
+
+    if (score > alpha && score < beta) {
+      score = -negamax(
+        nextBoard,
+        opponent,
+        depth - 1 + extension,
+        -beta,
+        -alpha,
+        ply + 1,
+        state,
+      );
+    }
 
     if (score > bestScore) {
       bestScore = score;
@@ -472,6 +499,7 @@ export function findBestMove(
   let depthReached = 0;
 
   try {
+    let aspirationCenter = 0;
     for (let depth = 1; depth <= maxDepth; depth += 1) {
       const orderedRootMoves = orderMoves(
         board,
@@ -485,37 +513,58 @@ export function findBestMove(
 
       let currentBestMove = orderedRootMoves[0];
       let currentBestScore = -INF_SCORE;
-      let alpha = -INF_SCORE;
-      const beta = INF_SCORE;
+      let alpha = depth >= 3 ? Math.max(-INF_SCORE, aspirationCenter - 180) : -INF_SCORE;
+      let beta = depth >= 3 ? Math.min(INF_SCORE, aspirationCenter + 180) : INF_SCORE;
 
-      for (const move of orderedRootMoves) {
-        state.throwIfTimedOut();
-        const nextBoard = applyMove(board, move);
-        const opponent: Side = side === "red" ? "black" : "red";
-        const extension = isInCheck(nextBoard, opponent) ? 1 : 0;
-        const score = -negamax(
-          nextBoard,
-          opponent,
-          depth - 1 + extension,
-          -beta,
-          -alpha,
-          1,
-          state,
-        );
+      while (true) {
+        const alphaStart = alpha;
+        const betaStart = beta;
+        currentBestScore = -INF_SCORE;
+        currentBestMove = orderedRootMoves[0];
+        let localAlpha = alpha;
 
-        if (score > currentBestScore) {
-          currentBestScore = score;
-          currentBestMove = move;
+        for (const move of orderedRootMoves) {
+          state.throwIfTimedOut();
+          const nextBoard = applyMove(board, move);
+          const opponent: Side = side === "red" ? "black" : "red";
+          const extension = isInCheck(nextBoard, opponent) ? 1 : 0;
+          const score = -negamax(
+            nextBoard,
+            opponent,
+            depth - 1 + extension,
+            -beta,
+            -localAlpha,
+            1,
+            state,
+          );
+
+          if (score > currentBestScore) {
+            currentBestScore = score;
+            currentBestMove = move;
+          }
+
+          if (score > localAlpha) {
+            localAlpha = score;
+          }
         }
 
-        if (score > alpha) {
-          alpha = score;
+        if (currentBestScore <= alphaStart && alphaStart !== -INF_SCORE) {
+          alpha = Math.max(-INF_SCORE, alphaStart - 260);
+          beta = Math.min(INF_SCORE, betaStart + 120);
+          continue;
         }
+        if (currentBestScore >= betaStart && betaStart !== INF_SCORE) {
+          alpha = Math.max(-INF_SCORE, alphaStart - 120);
+          beta = Math.min(INF_SCORE, betaStart + 260);
+          continue;
+        }
+        break;
       }
 
       bestMove = currentBestMove;
       bestScore = currentBestScore;
       depthReached = depth;
+      aspirationCenter = bestScore;
     }
   } catch (error) {
     if (!(error instanceof SearchTimeoutError)) {
