@@ -1,6 +1,6 @@
 import { areGeneralsFacing, isInCheck } from "./check";
 import { CHECK_BONUS, PIECE_VALUES, SOLDIER_CROSS_RIVER_BONUS } from "../constants/pieceValues";
-import type { Board, Piece, Side } from "../types/chess";
+import type { Board, EvalBreakdown, Piece, Side } from "../types/chess";
 
 function pieceSquareBonus(piece: Piece, row: number, col: number): number {
   let bonus = 0;
@@ -112,9 +112,28 @@ function openLinePressure(board: Board, side: Side): number {
   return score;
 }
 
-export function evaluateBoard(board: Board, perspective: Side): number {
-  const opponent: Side = perspective === "red" ? "black" : "red";
+function developmentScore(board: Board, side: Side): number {
   let score = 0;
+
+  for (let row = 0; row < board.length; row += 1) {
+    for (let col = 0; col < board[row].length; col += 1) {
+      const piece = board[row][col];
+      if (!piece || piece.side !== side) {
+        continue;
+      }
+
+      if (piece.type === "horse" || piece.type === "cannon" || piece.type === "rook") {
+        score += side === "red" ? (9 - row) * 6 : row * 6;
+      }
+    }
+  }
+
+  return score;
+}
+
+export function evaluateDetailedBoard(board: Board, perspective: Side): EvalBreakdown {
+  const opponent: Side = perspective === "red" ? "black" : "red";
+  let material = 0;
 
   for (let row = 0; row < board.length; row += 1) {
     for (let col = 0; col < board[row].length; col += 1) {
@@ -124,32 +143,51 @@ export function evaluateBoard(board: Board, perspective: Side): number {
       }
 
       const value = PIECE_VALUES[piece.type] + pieceSquareBonus(piece, row, col);
-      score += piece.side === perspective ? value : -value;
+      material += piece.side === perspective ? value : -value;
     }
   }
 
-  score += centralControl(board, perspective) - centralControl(board, opponent);
-  score += generalSafety(board, perspective) - generalSafety(board, opponent);
-  score += openLinePressure(board, perspective) - openLinePressure(board, opponent);
+  const centerControl =
+    centralControl(board, perspective) - centralControl(board, opponent);
+  const kingSafety = generalSafety(board, perspective) - generalSafety(board, opponent);
+  const filePressure =
+    openLinePressure(board, perspective) - openLinePressure(board, opponent);
+  let development =
+    developmentScore(board, perspective) - developmentScore(board, opponent);
 
   const myRooks = countPieces(board, perspective, "rook");
   const myCannons = countPieces(board, perspective, "cannon");
   const myHorses = countPieces(board, perspective, "horse");
-  score += myRooks >= 2 ? 70 : 0;
-  score += myCannons >= 2 ? 40 : 0;
-  score += myHorses >= 2 ? 30 : 0;
+  development += myRooks >= 2 ? 70 : 0;
+  development += myCannons >= 2 ? 40 : 0;
+  development += myHorses >= 2 ? 30 : 0;
+
+  let tactical = 0;
 
   if (isInCheck(board, opponent)) {
-    score += CHECK_BONUS + 100;
+    tactical += CHECK_BONUS + 100;
   }
 
   if (isInCheck(board, perspective)) {
-    score -= CHECK_BONUS + 100;
+    tactical -= CHECK_BONUS + 100;
   }
 
   if (areGeneralsFacing(board)) {
-    score += 120;
+    tactical += 120;
   }
 
-  return score;
+  const total = material + centerControl + kingSafety + filePressure + development + tactical;
+
+  return {
+    material,
+    kingSafety: kingSafety + tactical,
+    centerControl,
+    openLinePressure: filePressure,
+    development,
+    total,
+  };
+}
+
+export function evaluateBoard(board: Board, perspective: Side): number {
+  return evaluateDetailedBoard(board, perspective).total;
 }

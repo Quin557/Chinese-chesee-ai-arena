@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ChessBoard from "./components/ChessBoard";
 import GameInfo from "./components/GameInfo";
 import MoveHistory from "./components/MoveHistory";
+import WinProbabilityChart from "./components/WinProbabilityChart";
 import { createInitialBoard } from "./constants/initialBoard";
 import { AI_SEARCH_DEPTH, AI_THINK_TIME_MS } from "./engine/ai";
 import { isInCheck } from "./engine/check";
@@ -11,8 +12,16 @@ import {
   generateAllLegalMoves,
   generateLegalMovesForPiece,
 } from "./engine/moveGenerator";
+import { buildWinProbabilityPoint } from "./engine/probability";
 import { isPositionEqual } from "./engine/rules";
-import type { Board, GameSnapshot, Move, Position, Side } from "./types/chess";
+import type {
+  Board,
+  GameSnapshot,
+  Move,
+  Position,
+  Side,
+  WinProbabilityPoint,
+} from "./types/chess";
 import {
   formatMoveForDisplay,
   getDisplayMode,
@@ -64,10 +73,21 @@ function createSnapshot(snapshot: GameSnapshot): GameSnapshot {
     winner: snapshot.winner,
     hasStarted: snapshot.hasStarted,
     statusMessage: snapshot.statusMessage,
+    winRateHistory: snapshot.winRateHistory.map((point) => ({
+      ...point,
+      breakdown: { ...point.breakdown },
+    })),
+    lastEvaluation: snapshot.lastEvaluation
+      ? {
+          ...snapshot.lastEvaluation,
+          breakdown: { ...snapshot.lastEvaluation.breakdown },
+        }
+      : undefined,
   };
 }
 
 function createPreGameSnapshot(starterChoice: StarterChoice): GameSnapshot {
+  const initialEval = buildWinProbabilityPoint(createInitialBoard(), 0, "red");
   return {
     board: createInitialBoard(),
     currentTurn: starterChoice === "player" ? PLAYER_SIDE : AI_SIDE,
@@ -80,10 +100,13 @@ function createPreGameSnapshot(starterChoice: StarterChoice): GameSnapshot {
     winner: undefined,
     hasStarted: false,
     statusMessage: "请选择先手方，然后点击开始游戏。",
+    winRateHistory: [initialEval],
+    lastEvaluation: initialEval,
   };
 }
 
 function createStartedSnapshot(starterChoice: StarterChoice): GameSnapshot {
+  const initialEval = buildWinProbabilityPoint(createInitialBoard(), 0, "red");
   return {
     board: createInitialBoard(),
     currentTurn: starterChoice === "player" ? PLAYER_SIDE : AI_SIDE,
@@ -97,6 +120,8 @@ function createStartedSnapshot(starterChoice: StarterChoice): GameSnapshot {
     hasStarted: true,
     statusMessage:
       starterChoice === "ai" ? "对局开始，AI 红方先手。" : "对局开始，玩家红方先手。",
+    winRateHistory: [initialEval],
+    lastEvaluation: initialEval,
   };
 }
 
@@ -116,6 +141,12 @@ function App() {
   const [selectedPosition, setSelectedPosition] = useState<Position | undefined>();
   const [legalTargets, setLegalTargets] = useState<Position[]>([]);
   const [statusMessage, setStatusMessage] = useState("请选择先手方，然后点击开始游戏。");
+  const [winRateHistory, setWinRateHistory] = useState(() => [
+    buildWinProbabilityPoint(createInitialBoard(), 0, "red"),
+  ]);
+  const [lastEvaluation, setLastEvaluation] = useState<WinProbabilityPoint | undefined>(() =>
+    buildWinProbabilityPoint(createInitialBoard(), 0, "red"),
+  );
   const [historyStack, setHistoryStack] = useState<GameSnapshot[]>(() => [
     createPreGameSnapshot("ai"),
   ]);
@@ -131,6 +162,8 @@ function App() {
     hasStarted,
     playerSide: playerSideState,
     aiSide: aiSideState,
+    winRateHistory,
+    lastEvaluation,
   });
 
   useEffect(() => {
@@ -142,8 +175,20 @@ function App() {
       hasStarted,
       playerSide: playerSideState,
       aiSide: aiSideState,
+      winRateHistory,
+      lastEvaluation,
     };
-  }, [aiSideState, board, currentTurn, hasStarted, moveHistory, playerSideState, winner]);
+  }, [
+    aiSideState,
+    board,
+    currentTurn,
+    hasStarted,
+    lastEvaluation,
+    moveHistory,
+    playerSideState,
+    winRateHistory,
+    winner,
+  ]);
 
   const applySnapshotState = (snapshot: GameSnapshot) => {
     setBoard(cloneBoard(snapshot.board));
@@ -157,6 +202,12 @@ function App() {
     setWinner(snapshot.winner);
     setHasStarted(snapshot.hasStarted);
     setStatusMessage(snapshot.statusMessage);
+    setWinRateHistory(snapshot.winRateHistory.map((point) => ({ ...point, breakdown: { ...point.breakdown } })));
+    setLastEvaluation(
+      snapshot.lastEvaluation
+        ? { ...snapshot.lastEvaluation, breakdown: { ...snapshot.lastEvaluation.breakdown } }
+        : undefined,
+    );
     setSelectedPosition(undefined);
     setLegalTargets([]);
   };
@@ -201,6 +252,8 @@ function App() {
           winner: latest.playerSide,
           hasStarted: true,
           statusMessage: "AI 已无合法走法，你获胜了。",
+          winRateHistory: latest.winRateHistory,
+          lastEvaluation: latest.lastEvaluation,
         };
 
         applySnapshotState(snapshot);
@@ -209,6 +262,7 @@ function App() {
 
       const nextBoard = applyMove(latest.board, move);
       const nextMoves = [...latest.moveHistory, move];
+      const nextEval = buildWinProbabilityPoint(nextBoard, nextMoves.length, "red");
       const playerReplies = generateAllLegalMoves(nextBoard, latest.playerSide);
       const aiWon = playerReplies.length === 0;
       const snapshot: GameSnapshot = {
@@ -225,6 +279,8 @@ function App() {
         statusMessage: aiWon
           ? `AI 落子：${formatMoveForDisplay(move, displayMode)}。你已无合法应对，AI 获胜。`
           : `AI 落子：${formatMoveForDisplay(move, displayMode)}。搜索深度 ${depthReached}，耗时 ${(elapsedMs / 1000).toFixed(1)} 秒。`,
+        winRateHistory: [...latest.winRateHistory, nextEval],
+        lastEvaluation: nextEval,
       };
 
       pushSnapshot(snapshot);
@@ -368,6 +424,7 @@ function App() {
 
     const nextBoard = applyMove(board, legalMove);
     const nextMoves = [...moveHistory, legalMove];
+    const nextEval = buildWinProbabilityPoint(nextBoard, nextMoves.length, "red");
     const aiReplies = generateAllLegalMoves(nextBoard, aiSideState);
     const playerWon = aiReplies.length === 0;
     const snapshot: GameSnapshot = {
@@ -384,6 +441,8 @@ function App() {
       statusMessage: playerWon
         ? `你走出 ${formatMoveForDisplay(legalMove, displayMode)}，AI 无合法应对，你获胜了。`
         : `你走出 ${formatMoveForDisplay(legalMove, displayMode)}，AI 正在计算反击。`,
+      winRateHistory: [...winRateHistory, nextEval],
+      lastEvaluation: nextEval,
     };
 
     pushSnapshot(snapshot);
@@ -430,6 +489,11 @@ function App() {
             onUndo={handleUndo}
             onStartGame={handleStartGame}
             onSelectStarter={handleSelectStarter}
+          />
+          <WinProbabilityChart
+            history={winRateHistory}
+            selectedStarter={selectedStarter}
+            aiThinking={aiThinking}
           />
           <MoveHistory moves={moveHistory} displayMode={displayMode} />
         </div>
