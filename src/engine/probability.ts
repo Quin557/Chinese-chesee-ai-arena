@@ -1,4 +1,5 @@
 import { evaluateDetailedBoard } from "./evaluation";
+import { analyzeStrategicJudgement } from "./strategy";
 import type { Board, EvalBreakdown, Side, WinProbabilityPoint } from "../types/chess";
 
 interface ProbabilityOptions {
@@ -55,6 +56,41 @@ function majorReasons(breakdown: EvalBreakdown): string[] {
     .map((item) => (item.value >= 0 ? item.positive : item.negative));
 }
 
+function strategicReasons(
+  redJudgement: ReturnType<typeof analyzeStrategicJudgement>,
+  blackJudgement: ReturnType<typeof analyzeStrategicJudgement>,
+): string[] {
+  const reasons: string[] = [];
+
+  const initiativeDiff = redJudgement.initiative - blackJudgement.initiative;
+  const forcingDiff = redJudgement.forcingMoves - blackJudgement.forcingMoves;
+  const stableThreatDiff = redJudgement.stableThreats - blackJudgement.stableThreats;
+  const futileChaseDiff = redJudgement.futileChases - blackJudgement.futileChases;
+  const mobilityDiff = redJudgement.mobility - blackJudgement.mobility;
+
+  if (Math.abs(initiativeDiff) >= 70) {
+    reasons.push(initiativeDiff > 0 ? "红方主动权更强" : "黑方主动权更强");
+  }
+
+  if (Math.abs(forcingDiff) >= 2) {
+    reasons.push(forcingDiff > 0 ? "红方强制手更多" : "黑方强制手更多");
+  }
+
+  if (Math.abs(stableThreatDiff) >= 1) {
+    reasons.push(stableThreatDiff > 0 ? "红方威胁更稳定" : "黑方威胁更稳定");
+  }
+
+  if (Math.abs(futileChaseDiff) >= 1) {
+    reasons.push(futileChaseDiff < 0 ? "红方空追更少" : "黑方空追更少");
+  }
+
+  if (Math.abs(mobilityDiff) >= 8) {
+    reasons.push(mobilityDiff > 0 ? "红方可选方案更宽" : "黑方可选方案更宽");
+  }
+
+  return reasons.slice(0, 2);
+}
+
 export function buildWinProbabilityPoint(
   board: Board,
   ply: number,
@@ -62,10 +98,19 @@ export function buildWinProbabilityPoint(
   options: ProbabilityOptions = {},
 ): WinProbabilityPoint {
   const breakdown = evaluateDetailedBoard(board, perspective);
-  const redScore = perspective === "red" ? breakdown.total : -breakdown.total;
+  const redJudgement = analyzeStrategicJudgement(board, "red");
+  const blackJudgement = analyzeStrategicJudgement(board, "black");
+  const strategicScore =
+    redJudgement.initiative -
+    blackJudgement.initiative +
+    (redJudgement.mobility - blackJudgement.mobility) * 4;
+  const redScore = (perspective === "red" ? breakdown.total : -breakdown.total) + strategicScore;
   const redWinRate =
     options.winner === "red" ? 1 : options.winner === "black" ? 0 : scoreToWinRate(redScore);
-  const reasons = majorReasons(breakdown);
+  const reasons = [
+    ...strategicReasons(redJudgement, blackJudgement),
+    ...majorReasons(breakdown),
+  ].slice(0, 3);
 
   return {
     ply,

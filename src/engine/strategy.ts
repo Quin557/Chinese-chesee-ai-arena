@@ -1,7 +1,8 @@
 import { isInCheck } from "./check";
-import { applyMove } from "./moveGenerator";
+import { generatePseudoLegalMovesForPiece } from "./rules";
+import { applyMove, generateAllLegalMoves, generateLegalMovesForPiece } from "./moveGenerator";
 import { PIECE_VALUES } from "../constants/pieceValues";
-import type { Board, Move, PieceType, Side } from "../types/chess";
+import type { Board, Move, PieceType, Position, Side } from "../types/chess";
 
 interface WeightedBookMove {
   from: { row: number; col: number };
@@ -10,6 +11,15 @@ interface WeightedBookMove {
 }
 
 const OPENING_OCCUPIED_THRESHOLD = 28;
+const HIGH_VALUE_THREAT = PIECE_VALUES.horse;
+
+export interface StrategicJudgement {
+  initiative: number;
+  forcingMoves: number;
+  stableThreats: number;
+  futileChases: number;
+  mobility: number;
+}
 
 const RED_BOOK: WeightedBookMove[] = [
   { from: { row: 7, col: 1 }, to: { row: 7, col: 4 }, weight: 380 },
@@ -101,6 +111,107 @@ function isEarlyRookLift(move: Move, side: Side): boolean {
   );
 }
 
+function opponentOf(side: Side): Side {
+  return side === "red" ? "black" : "red";
+}
+
+function samePosition(a: Position, b: Position): boolean {
+  return a.row === b.row && a.col === b.col;
+}
+
+function isSquareAttackedBy(board: Board, target: Position, attacker: Side): boolean {
+  for (let row = 0; row < board.length; row += 1) {
+    for (let col = 0; col < board[row].length; col += 1) {
+      const piece = board[row][col];
+      if (piece?.side !== attacker) {
+        continue;
+      }
+
+      if (
+        generatePseudoLegalMovesForPiece(board, { row, col }).some((move) =>
+          samePosition(move.to, target),
+        )
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function attackedEnemyPieces(board: Board, side: Side): Position[] {
+  const opponent = opponentOf(side);
+  const attacked: Position[] = [];
+
+  for (let row = 0; row < board.length; row += 1) {
+    for (let col = 0; col < board[row].length; col += 1) {
+      const piece = board[row][col];
+      if (piece?.side === opponent && isSquareAttackedBy(board, { row, col }, side)) {
+        attacked.push({ row, col });
+      }
+    }
+  }
+
+  return attacked;
+}
+
+function safeEscapeCount(board: Board, target: Position, attacker: Side): number {
+  const targetPiece = board[target.row]?.[target.col];
+  if (!targetPiece) {
+    return 0;
+  }
+
+  let escapes = 0;
+  const legalMoves = generateLegalMovesForPiece(board, target);
+
+  for (const escape of legalMoves) {
+    if (escape.captured) {
+      continue;
+    }
+
+    const escapedBoard = applyMove(board, escape);
+    if (!isSquareAttackedBy(escapedBoard, escape.to, attacker)) {
+      escapes += 1;
+    }
+  }
+
+  return escapes;
+}
+
+function quietChaseProfile(board: Board, move: Move, side: Side): { futile: number; stable: number } {
+  if (move.captured || isInCheck(applyMove(board, move), opponentOf(side))) {
+    return { futile: 0, stable: 0 };
+  }
+
+  const beforeAttacks = attackedEnemyPieces(board, side);
+  const nextBoard = applyMove(board, move);
+  const afterAttacks = attackedEnemyPieces(nextBoard, side);
+  let futile = 0;
+  let stable = 0;
+
+  for (const target of afterAttacks) {
+    const targetPiece = nextBoard[target.row]?.[target.col];
+    if (!targetPiece || PIECE_VALUES[targetPiece.type] < HIGH_VALUE_THREAT) {
+      continue;
+    }
+
+    const wasAlreadyAttacked = beforeAttacks.some((position) => samePosition(position, target));
+    if (wasAlreadyAttacked) {
+      continue;
+    }
+
+    const escapes = safeEscapeCount(nextBoard, target, side);
+    if (escapes > 0 && escapes <= 2) {
+      futile += escapes === 1 ? 1.25 : 1;
+    } else if (escapes === 0) {
+      stable += 1;
+    }
+  }
+
+  return { futile, stable };
+}
+
 export function findStrategicBookMove(board: Board, side: Side, legalMoves: Move[]): Move | null {
   if (!isOpening(board)) {
     return null;
@@ -181,6 +292,47 @@ export function strategicMoveScore(board: Board, move: Move, side: Side): number
   }
 
   return score;
+}
+
+export function masterMoveScore(board: Board, move: Move, side: Side): number {
+  const profile = quietChaseProfile(board, move, side);
+  let score = profile.stable * 340 - profile.futile * 460;
+
+  if (move.captured) {
+    score += Math.round(PIECE_VALUES[move.captured.type] * 0.28);
+  }
+
+  return score;
+}
+
+export function analyzeStrategicJudgement(board: Board, side: Side): StrategicJudgement {
+  const opponent = opponentOf(side);
+  const legalMoves = generateAllLegalMoves(board, side);
+  let forcingMoves = 0;
+  let stableThreats = 0;
+  let futileChases = 0;
+
+  for (const move of legalMoves) {
+    const nextBoard = applyMove(board, move);
+    if (move.captured && PIECE_VALUES[move.captured.type] >= HIGH_VALUE_THREAT) {
+      forcingMoves += 1;
+    }
+    if (isInCheck(nextBoard, opponent)) {
+      forcingMoves += 2;
+    }
+
+    const profile = quietChaseProfile(board, move, side);
+    stableThreats += profile.stable;
+    futileChases += profile.futile;
+  }
+
+  return {
+    initiative: forcingMoves * 48 + stableThreats * 72 - futileChases * 66,
+    forcingMoves,
+    stableThreats,
+    futileChases,
+    mobility: legalMoves.length,
+  };
 }
 
 export function strategicBoardScore(board: Board, side: Side, gamePhase: number): number {
