@@ -1,4 +1,5 @@
 import { areGeneralsFacing, findGeneral, isInCheck } from "./check";
+import { strategicBoardScore } from "./strategy";
 import { CHECK_BONUS, PIECE_VALUES, SOLDIER_CROSS_RIVER_BONUS } from "../constants/pieceValues";
 import type { Board, EvalBreakdown, Piece, Position, Side } from "../types/chess";
 
@@ -370,6 +371,8 @@ export function evaluateDetailedBoard(board: Board, perspective: Side): EvalBrea
   development += myHorses >= 2 ? 36 : 0;
   development += conversionPressure(board, perspective, material, gamePhase);
   development -= conversionPressure(board, opponent, -material, gamePhase);
+  development += strategicBoardScore(board, perspective, gamePhase);
+  development -= strategicBoardScore(board, opponent, gamePhase);
 
   let tactical = 0;
 

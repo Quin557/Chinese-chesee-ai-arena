@@ -1,6 +1,7 @@
 import { isInCheck } from "./check";
 import { evaluateBoard } from "./evaluation";
 import { applyMove, generateAllLegalMoves } from "./moveGenerator";
+import { findStrategicBookMove, strategicMoveScore } from "./strategy";
 import { PIECE_VALUES } from "../constants/pieceValues";
 import type { Board, Move, Piece, PieceType, Side } from "../types/chess";
 
@@ -31,11 +32,6 @@ export interface SearchStats {
   nodes: number;
   elapsedMs: number;
   score: number;
-}
-
-interface BookMovePattern {
-  from: { row: number; col: number };
-  to: { row: number; col: number };
 }
 
 interface TranspositionEntry {
@@ -75,30 +71,6 @@ function createZobristTable(): bigint[][][] {
 }
 
 const ZOBRIST = createZobristTable();
-
-const RED_BOOK: BookMovePattern[] = [
-  { from: { row: 7, col: 1 }, to: { row: 7, col: 4 } },
-  { from: { row: 9, col: 1 }, to: { row: 7, col: 2 } },
-  { from: { row: 9, col: 7 }, to: { row: 7, col: 6 } },
-  { from: { row: 6, col: 4 }, to: { row: 5, col: 4 } },
-  { from: { row: 7, col: 7 }, to: { row: 7, col: 4 } },
-  { from: { row: 9, col: 0 }, to: { row: 8, col: 0 } },
-  { from: { row: 9, col: 8 }, to: { row: 8, col: 8 } },
-  { from: { row: 6, col: 2 }, to: { row: 5, col: 2 } },
-  { from: { row: 6, col: 6 }, to: { row: 5, col: 6 } },
-];
-
-const BLACK_BOOK: BookMovePattern[] = [
-  { from: { row: 2, col: 1 }, to: { row: 2, col: 4 } },
-  { from: { row: 0, col: 1 }, to: { row: 2, col: 2 } },
-  { from: { row: 0, col: 7 }, to: { row: 2, col: 6 } },
-  { from: { row: 3, col: 4 }, to: { row: 4, col: 4 } },
-  { from: { row: 2, col: 7 }, to: { row: 2, col: 4 } },
-  { from: { row: 0, col: 0 }, to: { row: 1, col: 0 } },
-  { from: { row: 0, col: 8 }, to: { row: 1, col: 8 } },
-  { from: { row: 3, col: 2 }, to: { row: 4, col: 2 } },
-  { from: { row: 3, col: 6 }, to: { row: 4, col: 6 } },
-];
 
 function pieceIndex(piece: Piece): number {
   return PIECE_TYPE_INDEX[piece.type] + (piece.side === "red" ? 7 : 0);
@@ -173,28 +145,6 @@ function computeDynamicTimeLimit(
   return Math.min(AI_MAX_TIME_MS, Math.round(budget));
 }
 
-function findBookMove(board: Board, side: Side, legalMoves: Move[]): Move | null {
-  if (countOccupied(board) < 28) {
-    return null;
-  }
-
-  const patterns = side === "red" ? RED_BOOK : BLACK_BOOK;
-  for (const pattern of patterns) {
-    const match = legalMoves.find(
-      (move) =>
-        move.from.row === pattern.from.row &&
-        move.from.col === pattern.from.col &&
-        move.to.row === pattern.to.row &&
-        move.to.col === pattern.to.col,
-    );
-    if (match) {
-      return match;
-    }
-  }
-
-  return null;
-}
-
 function moveIndex(position: { row: number; col: number }): number {
   return position.row * 9 + position.col;
 }
@@ -206,7 +156,7 @@ function isCheckingMove(board: Board, move: Move, side: Side): boolean {
 }
 
 function tacticalScore(board: Board, move: Move, side: Side): number {
-  let score = 0;
+  let score = strategicMoveScore(board, move, side);
 
   if (move.captured) {
     score += PIECE_VALUES[move.captured.type] * 18 - PIECE_VALUES[move.piece.type];
@@ -561,7 +511,7 @@ export function findBestMove(
     computeDynamicTimeLimit(board, side, requestedTimeLimitMs, rootMoves.length),
   );
 
-  const bookMove = findBookMove(board, side, rootMoves);
+  const bookMove = findStrategicBookMove(board, side, rootMoves);
   if (bookMove) {
     return {
       bestMove: bookMove,
