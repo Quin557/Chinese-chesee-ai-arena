@@ -1,7 +1,7 @@
 import { isInCheck } from "./check";
 import { evaluateBoard } from "./evaluation";
 import { applyMove, generateAllLegalMoves } from "./moveGenerator";
-import { findStrategicBookMove, strategicMoveScore } from "./strategy";
+import { findStrategicBookMove, masterMoveScore, strategicMoveScore } from "./strategy";
 import { PIECE_VALUES } from "../constants/pieceValues";
 import type { Board, Move, Piece, PieceType, Side } from "../types/chess";
 
@@ -198,6 +198,9 @@ function orderMoves(
   return moves
     .map((move) => {
       let priority = tacticalScore(board, move, side);
+      if (ply === 0) {
+        priority += masterMoveScore(board, move, side);
+      }
 
       if (sameMove(move, preferredMove)) {
         priority += 2_000_000;
