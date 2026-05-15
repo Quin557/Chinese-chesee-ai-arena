@@ -8,9 +8,12 @@ interface WeightedBookMove {
   from: { row: number; col: number };
   to: { row: number; col: number };
   weight: number;
+  required?: Array<{ row: number; col: number; side: Side; type: PieceType }>;
+  forbidden?: Array<{ row: number; col: number; side?: Side; type?: PieceType }>;
 }
 
 const OPENING_OCCUPIED_THRESHOLD = 28;
+const CLASSIC_BOOK_THRESHOLD = 260;
 const HIGH_VALUE_THREAT = PIECE_VALUES.horse;
 
 export interface StrategicJudgement {
@@ -26,8 +29,12 @@ const RED_BOOK: WeightedBookMove[] = [
   { from: { row: 7, col: 7 }, to: { row: 7, col: 4 }, weight: 378 },
   { from: { row: 9, col: 1 }, to: { row: 7, col: 2 }, weight: 320 },
   { from: { row: 9, col: 7 }, to: { row: 7, col: 6 }, weight: 318 },
+  { from: { row: 9, col: 0 }, to: { row: 8, col: 0 }, weight: 292, required: [{ row: 7, col: 4, side: "red", type: "cannon" }] },
+  { from: { row: 9, col: 8 }, to: { row: 8, col: 8 }, weight: 286, required: [{ row: 7, col: 4, side: "red", type: "cannon" }] },
+  { from: { row: 6, col: 4 }, to: { row: 5, col: 4 }, weight: 268, required: [{ row: 7, col: 4, side: "red", type: "cannon" }] },
   { from: { row: 9, col: 2 }, to: { row: 7, col: 4 }, weight: 250 },
   { from: { row: 9, col: 6 }, to: { row: 7, col: 4 }, weight: 246 },
+  { from: { row: 7, col: 4 }, to: { row: 2, col: 4 }, weight: 230, required: [{ row: 7, col: 4, side: "red", type: "cannon" }] },
   { from: { row: 9, col: 3 }, to: { row: 8, col: 4 }, weight: 184 },
   { from: { row: 9, col: 5 }, to: { row: 8, col: 4 }, weight: 182 },
 ];
@@ -37,12 +44,43 @@ const BLACK_BOOK: WeightedBookMove[] = [
   { from: { row: 2, col: 7 }, to: { row: 2, col: 4 }, weight: 378 },
   { from: { row: 0, col: 1 }, to: { row: 2, col: 2 }, weight: 320 },
   { from: { row: 0, col: 7 }, to: { row: 2, col: 6 }, weight: 318 },
+  { from: { row: 0, col: 0 }, to: { row: 1, col: 0 }, weight: 292, required: [{ row: 2, col: 4, side: "black", type: "cannon" }] },
+  { from: { row: 0, col: 8 }, to: { row: 1, col: 8 }, weight: 286, required: [{ row: 2, col: 4, side: "black", type: "cannon" }] },
+  { from: { row: 3, col: 4 }, to: { row: 4, col: 4 }, weight: 268, required: [{ row: 2, col: 4, side: "black", type: "cannon" }] },
   { from: { row: 0, col: 2 }, to: { row: 2, col: 4 }, weight: 250 },
   { from: { row: 0, col: 6 }, to: { row: 2, col: 4 }, weight: 246 },
+  { from: { row: 2, col: 4 }, to: { row: 7, col: 4 }, weight: 230, required: [{ row: 2, col: 4, side: "black", type: "cannon" }] },
   { from: { row: 0, col: 3 }, to: { row: 1, col: 4 }, weight: 184 },
   { from: { row: 0, col: 5 }, to: { row: 1, col: 4 }, weight: 182 },
 ];
 
+function matchesBookCondition(board: Board, candidate: WeightedBookMove): boolean {
+  const required = candidate.required ?? [];
+  const forbidden = candidate.forbidden ?? [];
+
+  for (const condition of required) {
+    const piece = board[condition.row]?.[condition.col];
+    if (piece?.side !== condition.side || piece.type !== condition.type) {
+      return false;
+    }
+  }
+
+  for (const condition of forbidden) {
+    const piece = board[condition.row]?.[condition.col];
+    if (!piece) {
+      continue;
+    }
+    if ((!condition.side || piece.side === condition.side) && (!condition.type || piece.type === condition.type)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function centralFilesScore(col: number): number {
+  return 4 - Math.abs(4 - col);
+}
 function countOccupied(board: Board): number {
   let count = 0;
   for (let row = 0; row < board.length; row += 1) {
@@ -227,7 +265,8 @@ export function findStrategicBookMove(board: Board, side: Side, legalMoves: Move
         move.from.row === candidate.from.row &&
         move.from.col === candidate.from.col &&
         move.to.row === candidate.to.row &&
-        move.to.col === candidate.to.col,
+        move.to.col === candidate.to.col &&
+        matchesBookCondition(board, candidate),
     );
 
     if (matchedMove && candidate.weight > bestWeight) {
@@ -237,6 +276,91 @@ export function findStrategicBookMove(board: Board, side: Side, legalMoves: Move
   }
 
   return bestMatch;
+}
+
+export function classicBookMoveScore(board: Board, move: Move, side: Side): number {
+  if (!isOpening(board)) {
+    return 0;
+  }
+
+  const repertoire = side === "red" ? RED_BOOK : BLACK_BOOK;
+  let score = 0;
+
+  for (const candidate of repertoire) {
+    if (
+      move.from.row === candidate.from.row &&
+      move.from.col === candidate.from.col &&
+      move.to.row === candidate.to.row &&
+      move.to.col === candidate.to.col &&
+      matchesBookCondition(board, candidate)
+    ) {
+      score = Math.max(score, candidate.weight + CLASSIC_BOOK_THRESHOLD);
+    }
+  }
+
+  return score;
+}
+
+export function classicMoveScore(board: Board, move: Move, side: Side): number {
+  let score = 0;
+  const opening = isOpening(board);
+  const homeRow = side === "red" ? 9 : 0;
+  const palaceRow = side === "red" ? 8 : 1;
+  const cannonRow = side === "red" ? 7 : 2;
+  const riverEntryRow = side === "red" ? 5 : 4;
+  const developedCorePieces = hasDevelopedCorePieces(board, side);
+
+  if (move.piece.type === "cannon" && move.to.col === 4) {
+    score += opening ? 520 : 150;
+  }
+
+  if (move.piece.type === "horse") {
+    const naturalHorseSquare =
+      move.to.row === cannonRow && (move.to.col === 2 || move.to.col === 6);
+    const rimHorse = move.to.col === 0 || move.to.col === 8;
+    score += naturalHorseSquare ? 420 : 0;
+    score -= rimHorse ? 130 : 0;
+  }
+
+  if (move.piece.type === "rook") {
+    const earlyRookOut = move.from.row === homeRow && (move.to.row === homeRow || move.to.row === palaceRow);
+    const centralizingFile = centralFilesScore(move.to.col) - centralFilesScore(move.from.col);
+    score += earlyRookOut && developedCorePieces >= 1 ? 210 : 0;
+    score += centralizingFile * 32;
+    if (opening && developedCorePieces === 0 && !move.captured) {
+      score -= 170;
+    }
+  }
+
+  if (move.piece.type === "elephant" && move.to.col === 4) {
+    score += opening ? 240 : 80;
+  }
+
+  if (move.piece.type === "advisor" && move.to.row === palaceRow && move.to.col === 4) {
+    score += opening ? 155 : 70;
+  }
+
+  if (move.piece.type === "soldier") {
+    if (move.from.col === 4 && move.to.row === riverEntryRow) {
+      score += developedCorePieces >= 2 ? 120 : -230;
+    }
+    if ((move.from.col === 0 || move.from.col === 8) && opening && !move.captured) {
+      score -= 180;
+    }
+    if (move.to.col >= 3 && move.to.col <= 5) {
+      score += 45;
+    }
+  }
+
+  const nextBoard = applyMove(board, move);
+  const profile = quietChaseProfile(board, move, side);
+  const opponent = opponentOf(side);
+  if (!move.captured && !isInCheck(nextBoard, opponent) && profile.futile > 0) {
+    score -= profile.futile * 520;
+  }
+  score += profile.stable * 310;
+
+  return Math.round(score);
 }
 
 export function strategicMoveScore(board: Board, move: Move, side: Side): number {
@@ -335,9 +459,57 @@ export function analyzeStrategicJudgement(board: Board, side: Side): StrategicJu
   };
 }
 
+function rookControlScore(board: Board, side: Side): number {
+  let score = 0;
+
+  for (let row = 0; row < board.length; row += 1) {
+    for (let col = 0; col < board[row].length; col += 1) {
+      const piece = board[row][col];
+      if (piece?.side !== side || piece.type !== "rook") {
+        continue;
+      }
+
+      let verticalSpace = 0;
+      for (let targetRow = row - 1; targetRow >= 0 && !board[targetRow][col]; targetRow -= 1) {
+        verticalSpace += 1;
+      }
+      for (let targetRow = row + 1; targetRow < 10 && !board[targetRow][col]; targetRow += 1) {
+        verticalSpace += 1;
+      }
+      score += verticalSpace * 10 + centralFilesScore(col) * 18;
+    }
+  }
+
+  return score;
+}
+
+function fortressScore(board: Board, side: Side): number {
+  const homeRows = side === "red" ? [7, 8, 9] : [0, 1, 2];
+  let guards = 0;
+  let score = 0;
+
+  for (const row of homeRows) {
+    for (let col = 3; col <= 5; col += 1) {
+      const piece = board[row][col];
+      if (piece?.side === side && (piece.type === "advisor" || piece.type === "elephant")) {
+        guards += 1;
+      }
+    }
+  }
+
+  score += guards * 34;
+  if (guards >= 3) {
+    score += 90;
+  }
+
+  return score;
+}
 export function strategicBoardScore(board: Board, side: Side, gamePhase: number): number {
   let score = 0;
   const opening = isOpening(board);
+
+  score += rookControlScore(board, side);
+  score += fortressScore(board, side) * (gamePhase >= 0.45 ? 1 : 0.65);
 
   if (opening) {
     const developedCorePieces = hasDevelopedCorePieces(board, side);

@@ -1,3 +1,4 @@
+import { isInCheck } from "./check";
 import { evaluateDetailedBoard } from "./evaluation";
 import { analyzeStrategicJudgement } from "./strategy";
 import type { Board, EvalBreakdown, Side, WinProbabilityPoint } from "../types/chess";
@@ -11,8 +12,40 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function scoreToWinRate(score: number): number {
-  const normalized = clamp(score / 260, -10, 10);
+  const normalized = clamp(score / 520, -6, 6);
   return 1 / (1 + Math.exp(-normalized));
+}
+
+function phaseAdjustedWeights(board: Board): { strategic: number; tactical: number; safety: number } {
+  let occupied = 0;
+  for (let row = 0; row < board.length; row += 1) {
+    for (let col = 0; col < board[row].length; col += 1) {
+      if (board[row][col]) {
+        occupied += 1;
+      }
+    }
+  }
+
+  if (occupied >= 26) {
+    return { strategic: 0.42, tactical: 0.18, safety: 0.2 };
+  }
+  if (occupied >= 18) {
+    return { strategic: 0.32, tactical: 0.24, safety: 0.24 };
+  }
+  return { strategic: 0.18, tactical: 0.34, safety: 0.3 };
+}
+
+function balancedStrategicScore(
+  redJudgement: ReturnType<typeof analyzeStrategicJudgement>,
+  blackJudgement: ReturnType<typeof analyzeStrategicJudgement>,
+): number {
+  return (
+    (redJudgement.initiative - blackJudgement.initiative) * 0.72 +
+    (redJudgement.stableThreats - blackJudgement.stableThreats) * 84 +
+    (redJudgement.forcingMoves - blackJudgement.forcingMoves) * 32 +
+    (redJudgement.mobility - blackJudgement.mobility) * 5 -
+    (redJudgement.futileChases - blackJudgement.futileChases) * 74
+  );
 }
 
 function majorReasons(breakdown: EvalBreakdown): string[] {
@@ -98,13 +131,22 @@ export function buildWinProbabilityPoint(
   options: ProbabilityOptions = {},
 ): WinProbabilityPoint {
   const breakdown = evaluateDetailedBoard(board, perspective);
+  const redBreakdown = perspective === "red" ? breakdown : evaluateDetailedBoard(board, "red");
   const redJudgement = analyzeStrategicJudgement(board, "red");
   const blackJudgement = analyzeStrategicJudgement(board, "black");
-  const strategicScore =
-    redJudgement.initiative -
-    blackJudgement.initiative +
-    (redJudgement.mobility - blackJudgement.mobility) * 4;
-  const redScore = (perspective === "red" ? breakdown.total : -breakdown.total) + strategicScore;
+  const weights = phaseAdjustedWeights(board);
+  const strategicScore = balancedStrategicScore(redJudgement, blackJudgement);
+  const redInCheck = isInCheck(board, "red");
+  const blackInCheck = isInCheck(board, "black");
+  const checkScore = redInCheck === blackInCheck ? 0 : blackInCheck ? 90 : -90;
+  const materialAndStructure =
+    redBreakdown.material * 0.5 +
+    redBreakdown.development * 0.34 +
+    redBreakdown.centerControl * 0.28 +
+    redBreakdown.openLinePressure * 0.24;
+  const safetyScore = redBreakdown.kingSafety * weights.safety + checkScore;
+  const redScore =
+    materialAndStructure + strategicScore * weights.strategic + safetyScore * weights.tactical;
   const redWinRate =
     options.winner === "red" ? 1 : options.winner === "black" ? 0 : scoreToWinRate(redScore);
   const reasons = [

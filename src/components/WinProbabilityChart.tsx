@@ -14,6 +14,18 @@ interface ChartPoint {
   value: number;
 }
 
+function smoothValue(history: WinProbabilityPoint[], index: number, displayedRedIsInternalRed: boolean): number {
+  const current = displayedRedIsInternalRed ? history[index].redWinRate : history[index].blackWinRate;
+  const prev = index > 0 ? (displayedRedIsInternalRed ? history[index - 1].redWinRate : history[index - 1].blackWinRate) : current;
+  const next =
+    index + 1 < history.length
+      ? displayedRedIsInternalRed
+        ? history[index + 1].redWinRate
+        : history[index + 1].blackWinRate
+      : current;
+  return current * 0.58 + prev * 0.21 + next * 0.21;
+}
+
 function buildSegments(points: ChartPoint[]) {
   return points.slice(1).map((point, index) => {
     const prev = points[index];
@@ -33,8 +45,8 @@ function WinProbabilityChart({
 }: WinProbabilityChartProps) {
   const displayMode: DisplayMode = getDisplayMode(selectedStarter);
   const displayedRedIsInternalRed = getDisplaySide("red", displayMode) === "red";
-  const points: ChartPoint[] = history.map((point, index) => {
-    const displayedRedRate = displayedRedIsInternalRed ? point.redWinRate : point.blackWinRate;
+  const points: ChartPoint[] = history.map((_, index) => {
+    const displayedRedRate = smoothValue(history, index, displayedRedIsInternalRed);
     const value = Math.round(displayedRedRate * 1000) / 10;
     return {
       x: history.length === 1 ? 0 : (index / (history.length - 1)) * 100,

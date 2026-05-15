@@ -1,13 +1,20 @@
 import { isInCheck } from "./check";
 import { evaluateBoard } from "./evaluation";
 import { applyMove, generateAllLegalMoves } from "./moveGenerator";
-import { findStrategicBookMove, masterMoveScore, strategicMoveScore } from "./strategy";
+import {
+  analyzeStrategicJudgement,
+  classicBookMoveScore,
+  classicMoveScore,
+  findStrategicBookMove,
+  masterMoveScore,
+  strategicMoveScore,
+} from "./strategy";
 import { PIECE_VALUES } from "../constants/pieceValues";
 import type { Board, Move, Piece, PieceType, Side } from "../types/chess";
 
-export const AI_SEARCH_DEPTH = 11;
-export const AI_THINK_TIME_MS = 20000;
-export const AI_MAX_TIME_MS = 80000;
+export const AI_SEARCH_DEPTH = 12;
+export const AI_THINK_TIME_MS = 90000;
+export const AI_MAX_TIME_MS = 90000;
 
 const MATE_SCORE = 10_000_000;
 const INF_SCORE = 100_000_000;
@@ -17,6 +24,10 @@ const TT_MAX_SIZE = 220_000;
 const TIME_CHECK_INTERVAL = 1024;
 const QUIESCENCE_NODE_LIMIT = 50_000;
 const ROOT_MOVE_CAP_LATE = 16;
+const ROOT_PRINCIPAL_CANDIDATES = 10;
+const VERIFY_DEPTH_REDUCTION = 2;
+const REPETITIVE_CHECK_PENALTY = 850_000;
+const PRESSURE_VERIFY_MARGIN = 360;
 const MATE_BREAK_WINDOW = 2_000;
 
 type BoundFlag = "exact" | "lower" | "upper";
@@ -24,6 +35,7 @@ type BoundFlag = "exact" | "lower" | "upper";
 interface SearchOptions {
   maxDepth?: number;
   timeLimitMs?: number;
+  moveHistory?: Move[];
 }
 
 export interface SearchStats {
@@ -103,6 +115,40 @@ function sameMove(a?: Move, b?: Move): boolean {
   );
 }
 
+function moveSignature(move: Move): string {
+  return `${move.from.row},${move.from.col}-${move.to.row},${move.to.col}`;
+}
+
+function repeatedCheckingMoveCount(history: Move[], move: Move): number {
+  let repetitions = 0;
+  const signature = moveSignature(move);
+
+  for (let index = history.length - 1; index >= 0; index -= 2) {
+    const historicalMove = history[index];
+    if (!historicalMove || !sameMove(historicalMove, move)) {
+      break;
+    }
+    if (moveSignature(historicalMove) === signature) {
+      repetitions += 1;
+    }
+  }
+
+  return repetitions;
+}
+
+function isRepetitiveCheckingMove(board: Board, move: Move, side: Side, history: Move[]): boolean {
+  return isCheckingMove(board, move, side) && repeatedCheckingMoveCount(history, move) >= 2;
+}
+
+function filterRepetitiveCheckingMoves(
+  board: Board,
+  side: Side,
+  moves: Move[],
+  history: Move[],
+): Move[] {
+  const filtered = moves.filter((move) => !isRepetitiveCheckingMove(board, move, side, history));
+  return filtered.length > 0 ? filtered : moves;
+}
 function countOccupied(board: Board): number {
   let count = 0;
   for (let row = 0; row < board.length; row += 1) {
@@ -155,8 +201,35 @@ function isCheckingMove(board: Board, move: Move, side: Side): boolean {
   return isInCheck(nextBoard, opponent);
 }
 
+function earlyMiddlePressureScore(board: Board, move: Move, side: Side): number {
+  const occupied = countOccupied(board);
+  if (occupied <= 18) {
+    return 0;
+  }
+
+  const nextBoard = applyMove(board, move);
+  const opponent: Side = side === "red" ? "black" : "red";
+  const myPlan = analyzeStrategicJudgement(nextBoard, side);
+  const opponentPlan = analyzeStrategicJudgement(nextBoard, opponent);
+  let score = myPlan.initiative * 3 + myPlan.stableThreats * 260 + myPlan.forcingMoves * 95;
+  score -= opponentPlan.initiative * 1.5 + opponentPlan.mobility * 11 + opponentPlan.forcingMoves * 70;
+
+  if (isInCheck(nextBoard, opponent)) {
+    score += 420;
+  }
+  if (move.captured && PIECE_VALUES[move.captured.type] >= PIECE_VALUES.horse) {
+    score += 360;
+  }
+
+  return Math.round(score);
+}
+
 function tacticalScore(board: Board, move: Move, side: Side): number {
-  let score = strategicMoveScore(board, move, side);
+  let score =
+    strategicMoveScore(board, move, side) +
+    classicMoveScore(board, move, side) +
+    classicBookMoveScore(board, move, side) +
+    earlyMiddlePressureScore(board, move, side);
 
   if (move.captured) {
     score += PIECE_VALUES[move.captured.type] * 18 - PIECE_VALUES[move.piece.type];
@@ -322,6 +395,12 @@ interface SearchState {
   reachedSoftDeadline: () => boolean;
 }
 
+interface CandidateMove {
+  move: Move;
+  score: number;
+  verificationScore: number;
+}
+
 function negamax(
   board: Board,
   side: Side,
@@ -462,6 +541,50 @@ function negamax(
   return bestScore;
 }
 
+function positionalPlanScore(board: Board, side: Side): number {
+  const plan = analyzeStrategicJudgement(board, side);
+  return (
+    plan.initiative * 2.8 +
+    plan.stableThreats * 170 +
+    plan.forcingMoves * 54 +
+    plan.mobility * 7 -
+    plan.futileChases * 230
+  );
+}
+
+function compareCandidateMoves(a: CandidateMove, b: CandidateMove): number {
+  return b.score - a.score || b.verificationScore - a.verificationScore;
+}
+
+function evaluateRootMovePlan(
+  board: Board,
+  move: Move,
+  side: Side,
+  state: SearchState,
+  verificationDepth: number,
+): number {
+  const nextBoard = applyMove(board, move);
+  const opponent: Side = side === "red" ? "black" : "red";
+  const myPlan = positionalPlanScore(nextBoard, side);
+  const opponentPlan = positionalPlanScore(nextBoard, opponent);
+  const staticScore = evaluateBoard(nextBoard, side);
+  const classicScore = classicMoveScore(board, move, side) + classicBookMoveScore(board, move, side);
+  const pressureScore = earlyMiddlePressureScore(board, move, side);
+  let verificationScore = staticScore;
+
+  if (verificationDepth > 0) {
+    verificationScore = -negamax(nextBoard, opponent, verificationDepth, -INF_SCORE, INF_SCORE, 1, state);
+  }
+
+  return Math.round(
+    verificationScore * 0.62 +
+      staticScore * 0.14 +
+      (myPlan - opponentPlan) * 0.1 +
+      classicScore * 0.36 +
+      pressureScore * 0.24,
+  );
+}
+
 function createSearchState(timeLimitMs: number): SearchState {
   const startTime = performance.now();
   const boundedTimeLimit = Math.min(timeLimitMs, AI_MAX_TIME_MS);
@@ -497,7 +620,8 @@ export function findBestMove(
 ): SearchStats {
   const maxDepth = options.maxDepth ?? AI_SEARCH_DEPTH;
   const requestedTimeLimitMs = options.timeLimitMs ?? AI_THINK_TIME_MS;
-  const rootMoves = generateAllLegalMoves(board, side);
+  const moveHistory = options.moveHistory ?? [];
+  const rootMoves = filterRepetitiveCheckingMoves(board, side, generateAllLegalMoves(board, side), moveHistory);
 
   if (rootMoves.length === 0) {
     const state = createSearchState(requestedTimeLimitMs);
@@ -528,6 +652,11 @@ export function findBestMove(
   let bestMove = rootMoves[0];
   let bestScore = -INF_SCORE;
   let depthReached = 0;
+  let principalCandidates: CandidateMove[] = rootMoves.map((move) => ({
+    move,
+    score: -INF_SCORE,
+    verificationScore: -INF_SCORE,
+  }));
 
   try {
     let aspirationCenter = 0;
@@ -557,6 +686,7 @@ export function findBestMove(
         currentBestScore = -INF_SCORE;
         currentBestMove = orderedRootMoves[0];
         let localAlpha = alpha;
+        const candidateScores: CandidateMove[] = [];
 
         for (const move of orderedRootMoves) {
           state.throwIfTimedOut();
@@ -572,6 +702,8 @@ export function findBestMove(
             1,
             state,
           );
+
+          candidateScores.push({ move, score, verificationScore: score });
 
           if (score > currentBestScore) {
             currentBestScore = score;
@@ -594,6 +726,10 @@ export function findBestMove(
           continue;
         }
 
+        if (candidateScores.length > 0) {
+          principalCandidates = candidateScores.sort(compareCandidateMoves);
+        }
+
         if (depth >= 4 && state.reachedSoftDeadline()) {
           break;
         }
@@ -612,6 +748,39 @@ export function findBestMove(
       if (Math.abs(bestScore) >= MATE_SCORE - MATE_BREAK_WINDOW) {
         break;
       }
+    }
+
+    const verificationDepth = Math.max(0, Math.min(depthReached - VERIFY_DEPTH_REDUCTION, 3));
+    const verificationWindow = Math.max(3, Math.min(ROOT_PRINCIPAL_CANDIDATES, principalCandidates.length));
+    let selectedCandidate: CandidateMove | undefined;
+
+    for (let index = 0; index < verificationWindow; index += 1) {
+      if (state.reachedSoftDeadline() && index > 0) {
+        break;
+      }
+
+      const candidate = principalCandidates[index];
+      state.throwIfTimedOut();
+      candidate.verificationScore = evaluateRootMovePlan(
+        board,
+        candidate.move,
+        side,
+        state,
+        verificationDepth,
+      );
+
+      if (isRepetitiveCheckingMove(board, candidate.move, side, moveHistory)) {
+        candidate.verificationScore -= REPETITIVE_CHECK_PENALTY;
+      }
+
+      if (!selectedCandidate || candidate.verificationScore > selectedCandidate.verificationScore) {
+        selectedCandidate = candidate;
+      }
+    }
+
+    if (selectedCandidate && selectedCandidate.verificationScore >= bestScore - PRESSURE_VERIFY_MARGIN) {
+      bestMove = selectedCandidate.move;
+      bestScore = Math.round(bestScore * 0.82 + selectedCandidate.verificationScore * 0.18);
     }
   } catch (error) {
     if (!(error instanceof SearchTimeoutError)) {

@@ -410,9 +410,10 @@ button {
 
 .chart-line-segment {
   fill: none;
-  stroke-width: 3;
+  stroke-width: 1.45;
   stroke-linecap: round;
   stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
 }
 
 .chart-line-segment-red {
@@ -425,7 +426,8 @@ button {
 
 .chart-point {
   stroke: #fff8ef;
-  stroke-width: 1.2;
+  stroke-width: 0.9;
+  vector-effect: non-scaling-stroke;
 }
 
 .chart-point-red {

@@ -36,6 +36,7 @@ interface AiWorkerRequest {
   side: Side;
   maxDepth: number;
   timeLimitMs?: number;
+  moveHistory?: Move[];
 }
 
 interface AiWorkerResponse {
@@ -325,7 +326,7 @@ function App() {
     setStatusMessage(
       moveHistory.length === 0
         ? `AI 正在计算开局主线，限时 ${(AI_THINK_TIME_MS / 1000).toFixed(0)} 秒。`
-        : `AI 正在限时搜索反击方案，常规预算 ${(AI_THINK_TIME_MS / 1000).toFixed(0)} 秒，复杂局面绝不超过 80 秒。`,
+        : `AI 正在限时搜索压制方案，每步最多 ${(AI_THINK_TIME_MS / 1000).toFixed(0)} 秒。`,
     );
 
     workerRef.current?.postMessage({
@@ -334,6 +335,7 @@ function App() {
       side: aiSideState,
       maxDepth: AI_SEARCH_DEPTH,
       timeLimitMs: AI_THINK_TIME_MS,
+      moveHistory: moveHistory.map(cloneMove),
     } satisfies AiWorkerRequest);
   }, [aiSideState, aiThinking, board, currentTurn, hasStarted, moveHistory.length, winner]);
 

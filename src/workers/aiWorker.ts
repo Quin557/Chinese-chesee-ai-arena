@@ -9,6 +9,7 @@ interface AiWorkerRequest {
   side: Side;
   maxDepth: number;
   timeLimitMs?: number;
+  moveHistory?: Move[];
 }
 
 interface AiWorkerResponse {
@@ -23,10 +24,11 @@ interface AiWorkerResponse {
 declare const self: DedicatedWorkerGlobalScope;
 
 self.onmessage = (event: MessageEvent<AiWorkerRequest>) => {
-  const { requestId, board, side, maxDepth, timeLimitMs } = event.data;
+  const { requestId, board, side, maxDepth, timeLimitMs, moveHistory } = event.data;
   const result = findBestMove(board, side, {
     maxDepth,
     timeLimitMs: timeLimitMs ?? AI_THINK_TIME_MS,
+    moveHistory: moveHistory ?? [],
   });
 
   self.postMessage({
